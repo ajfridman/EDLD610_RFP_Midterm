@@ -1,0 +1,138 @@
+---
+title: "Midterm"
+author: "Andrew Fridman"
+date: "5/5/19"
+output: html_document
+---
+
+```{r Setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+#Load libraries
+pacman::p_load(fs, glue, here, janitor, pracma, tidyverse, psych, rcartocolor, repurrrsive, rio)
+```
+
+```{r Part A, Question 1}
+#####Part A: Data#####
+
+#Download file
+file <- function(year) {
+link <- glue::glue("https://www.oregon.gov/ode/educator-resources/assessment/TestResults20{year}/pagr_schools_ela_raceethnicity_{year-1}{year}.xlsx")
+rio::import(link, setclass = "tibble", na = c("-", "--", "*"))
+}
+
+#Question 1
+
+#Create dataframe
+data <- map_df(c(15:18), file) 
+
+#Tidy data
+data_a1 <- data %>% 
+           clean_names() %>% 
+           filter(student_group == "White" |
+                  student_group == "Hispanic/Latino") %>% 
+           select(academic_year, district, school, student_group, grade_level, 
+                  number_level_1, number_level_2, number_level_3, number_level_4) %>% 
+           gather(level, n, 6:9)  %>% 
+           mutate(level = parse_number(level),
+                  grade_level = parse_number(grade_level)) %>% 
+           filter(!is.na(n)) %>% 
+           arrange(academic_year, district, student_group, grade_level)
+```
+
+```{r Part A, Question 2}
+#Question 2
+
+#Calculate cumulative sum
+data_a2 <- data_a1 %>% 
+           group_by(school, student_group, grade_level, academic_year) %>%   
+           mutate(cn = cumsum(n))
+```
+
+```{r Part A, Question 3}
+#Question 3
+
+#Reformat data
+data_a3 <- data_a2 %>% 
+           select(-n) %>% 
+           spread(student_group, cn) %>% 
+           clean_names() %>% 
+           filter(!is.na(hispanic_latino),
+                 !is.na(white))
+```
+
+```{r Part B, Question 1}
+#####Part B: Achievement Gaps#####
+
+#Question 1
+
+#Create gap function
+gap <- function(data, ref, foc) {
+    x <- data[[ref]]
+    y <- data[[foc]]
+    auc <- pracma::trapz(y/y[length(x)],
+                         x/x[length(x)])
+    sqrt(2)*qnorm(auc)
+}
+
+#Nest by desired variables
+data_b1 <- data_a3 %>% 
+           nest(-school, -grade_level, -academic_year) %>% 
+           mutate(gap = map_dbl(data, gap, "white", "hispanic_latino"))
+```
+
+```{r Part B, Question 2}
+#Question 2
+
+#Pull district from nested data
+dist <- function(ob) {
+    ob[["district"]][1]
+}
+
+#Create plots (I'm not quite sure how to remove all the characters following the distract names)
+plots <- data_b1 %>% 
+         mutate(district = map_chr(data, dist)) %>% 
+         select(-data) %>% 
+         group_by(school, district, academic_year) %>% 
+         nest() %>% 
+         slice(1:100) %>% 
+         mutate(plot = pmap(list(data, school, district, academic_year), ~
+                ggplot(..1, aes(grade_level, gap, fill = gap)) +
+                geom_col() +
+                coord_flip() + 
+                scale_fill_carto_c(palette = "Fall", 
+                                   direction = 1, 
+                                   limits = c(-1.5, 1.5)) + 
+                theme_minimal() +
+                geom_hline(yintercept = 0, 
+                           size = 0.5, 
+                           color = "black") +
+                theme(legend.position = "bottom", 
+                      legend.key.width = unit(1.5, "cm"), 
+                      legend.title = element_blank()) +
+                labs(title = glue("Achievement Gap Estimates: {..2}"), 
+                     subtitle = "Students coded as White as compared to those coded as Hispanic/Latino\n", 
+                     caption = glue("{..4} School year, {..3} School District, Oregon"), y = "\nEffect Size", 
+                     x = "Grade\n")))
+
+#Sample plot (Colors not the same, but close enough!)
+plots$plot[35]
+```
+
+```{r Part B, Question 3}
+#Question 3
+
+#Create meaningful plot file names
+p_save  <- plots %>% 
+           unite(name, school, academic_year, sep = "_") 
+
+#Save plots into specific directory
+files <- str_replace_all(tolower(p_save$name), " ", "_")
+p_path <- here::here("plots", glue("{files}.png"))
+
+#Specify dimensions for plots
+walk2(p_path, p_save$plot, ggsave,
+      width = 9.5,
+      height = 6.5,
+      dpi = 500)
+```
